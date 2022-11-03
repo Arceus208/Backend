@@ -5,6 +5,9 @@ import { Product } from "../models/product";
 import { v2 } from "cloudinary";
 import { v4 as uuidv4 } from "uuid";
 
+import { checkAdmin } from "../middleware/checkAdmin";
+import { getSortParams, sortType } from "../utils/sortType";
+
 export const getAllProducts: RequestHandler = async (req, res, next) => {
   let products;
   let page;
@@ -30,21 +33,47 @@ export const getAllProducts: RequestHandler = async (req, res, next) => {
 };
 
 export const createProduct: RequestHandler = async (req, res, next) => {
-  const { name, description, price, category, quantity, subCategory } =
-    req.body;
+  try {
+    await checkAdmin(req, res, next);
+  } catch (err) {
+    return next(err);
+  }
+
+  const {
+    name,
+    description,
+    price,
+    category,
+    quantity,
+    subCategory,
+    discount,
+  } = req.body;
 
   const files = req.files as {
     [fieldname: string]: Express.Multer.File[];
   };
 
-  const mainImg = {
-    photoId: files["mainImg"][0].filename,
-    path: files["mainImg"][0].path,
-  };
+  let mainImg;
+  if (!files["mainImg"]) {
+    mainImg = {
+      photoId: uuidv4(),
+      path: "https://res.cloudinary.com/devnhm0jy/image/upload/v1663753614/Yugioh_shop/no-product-image_ydbimi.png",
+    };
+  } else {
+    mainImg = {
+      photoId: files["mainImg"][0].filename,
+      path: files["mainImg"][0].path,
+    };
+  }
 
-  const images = files["images"].map((file) => {
-    return { photoId: file.filename, path: file.path };
-  });
+  let images: any;
+  if (files["images"]) {
+    images = files["images"].map((file) => {
+      return { photoId: file.filename, path: file.path };
+    });
+  } else {
+    images = [];
+  }
 
   const product = new Product({
     name,
@@ -55,6 +84,7 @@ export const createProduct: RequestHandler = async (req, res, next) => {
     images,
     quantity: parseFloat(quantity),
     subCategory: JSON.parse(subCategory),
+    discount: parseFloat(discount),
   });
 
   try {
@@ -68,82 +98,113 @@ export const createProduct: RequestHandler = async (req, res, next) => {
   });
 };
 
-export const increaseQuantity: RequestHandler = async (req, res, next) => {
-  const pid = req.params.productId;
-  const { value } = req.body;
-
-  let product;
-  try {
-    product = await Product.findById({ pid });
-  } catch (err) {
-    return next(new HttpError("Error by getting product", 500));
-  }
-
-  if (!product) {
-    return next(new HttpError("There is no such product", 422));
-  }
-
-  product.quantity = product.quantity + value;
-
-  try {
-    await product.save();
-  } catch (err) {
-    return next(new HttpError("Server error", 500));
-  }
-
-  res.status(201).json({ message: "Increase quantity successfully!" });
-};
-
 export const getProductsByFilter: RequestHandler = async (req, res, next) => {
-  let { search, category, subCategory } = req.query;
+  let {
+    search,
+    category,
+    subCategory,
+    limit,
+    page,
+    minPrice,
+    maxPrice,
+    isSale,
+    sort,
+  } = req.query;
+  let pageLimit, currentPage;
+  let match = {} as any;
 
-  if (!search) {
-    search = "";
+  if (search && search !== "null") {
+    match = {
+      ...match,
+      $or: [
+        { name: { $regex: search, $options: "i" } },
+        { description: { $regex: search, $options: "i" } },
+      ],
+    };
   }
 
-  if (!category) {
-    category = "";
+  if (category && category !== "undefined") {
+    match = { ...match, category: category };
   }
 
-  if (!subCategory) {
-    subCategory = "";
+  if (subCategory && subCategory !== "undefined") {
+    let subQuery;
+
+    if (typeof subCategory === "string" && subCategory.length !== 0) {
+      subQuery = subCategory.split(" ");
+    }
+
+    match = { ...match, subCategory: { $in: subQuery } };
   }
 
-  let subQuery;
+  if (minPrice && maxPrice) {
+    match = {
+      ...match,
+      $and: [
+        { curPrice: { $gte: minPrice } },
+        { curPrice: { $lte: maxPrice } },
+      ],
+    };
+  } else {
+    if (minPrice) {
+      match = {
+        ...match,
+        curPrice: { $gte: minPrice },
+      };
+    }
 
-  if (typeof subCategory === "string" && subCategory.length !== 0) {
-    subQuery = subCategory.split(" ");
+    if (maxPrice) {
+      match = {
+        ...match,
+        curPrice: { $lte: maxPrice },
+      };
+    }
+  }
+
+  if (isSale) {
+    if (isSale === "true") {
+      match = { ...match, discount: { $gt: 0 } };
+    }
+  }
+
+  if (!page) {
+    currentPage = 0;
+  } else {
+    currentPage = parseInt(page as string);
   }
 
   let products;
 
-  try {
-    if (subCategory?.length !== 0) {
-      products = await Product.find({
-        $or: [
-          { name: { $regex: search, $options: "i" } },
-          { description: { $regex: search, $options: "i" } },
-        ],
-        $and: [
-          { category: { $regex: category, $options: "i" } },
-          { subCategory: { $all: subQuery } },
-        ],
-      });
-    } else {
-      products = await Product.find({
-        $or: [
-          { name: { $regex: search, $options: "i" } },
-          { description: { $regex: search, $options: "i" } },
-        ],
+  if (!limit) {
+    pageLimit = 20;
+  } else {
+    pageLimit = parseInt(limit as string);
+  }
 
-        $and: [{ category: { $regex: category, $options: "i" } }],
-      });
+  try {
+    if (sort) {
+      if (sortType.includes(sort as string)) {
+        let sortArray = getSortParams(sort as string);
+
+        products = await Product.find({ ...match })
+          .limit(pageLimit)
+          .skip(currentPage * pageLimit)
+          .sort([sortArray]);
+      } else {
+        products = await Product.find({ ...match })
+          .limit(pageLimit)
+          .skip(currentPage * pageLimit);
+      }
+    } else {
+      products = await Product.find({ ...match })
+        .limit(pageLimit)
+        .skip(currentPage * pageLimit);
     }
   } catch (err) {
     return next(new HttpError("Server error", 500));
   }
 
-  return res.json({
+  return res.status(201).json({
     products: products.map((product) => product.toObject({ getters: true })),
   });
 };
@@ -154,6 +215,9 @@ export const getProductById: RequestHandler = async (req, res, next) => {
   let product;
   try {
     product = await Product.findById(id);
+    if (!product) {
+      return next(new HttpError("There is no such product", 400));
+    }
   } catch (err) {
     return next(new HttpError("Server error", 500));
   }
@@ -164,10 +228,23 @@ export const getProductById: RequestHandler = async (req, res, next) => {
 };
 
 export const editProduct: RequestHandler = async (req, res, next) => {
+  try {
+    await checkAdmin(req, res, next);
+  } catch (err) {
+    return next(err);
+  }
+
   const { id } = req.params;
 
-  const { name, description, price, category, quantity, subCategory } =
-    req.body;
+  const {
+    name,
+    description,
+    price,
+    category,
+    quantity,
+    subCategory,
+    discount,
+  } = req.body;
 
   let product;
   try {
@@ -177,16 +254,18 @@ export const editProduct: RequestHandler = async (req, res, next) => {
   }
 
   if (!product) {
-    return res.status(201).json({ message: "There is no such product" });
+    return next(new HttpError("There is no such product", 400));
   }
 
   try {
     product.name = name;
     product.description = description;
-    product.price = price;
+    product.price = parseFloat(price);
     product.category = category;
-    product.quantity = quantity;
-    product.subCategory = subCategory;
+    product.quantity = parseFloat(quantity);
+    product.subCategory = JSON.parse(subCategory);
+    product.discount = parseFloat(discount);
+
     await product.save();
   } catch (err) {
     return next(new HttpError("Some error happened, Please try again", 500));
@@ -198,6 +277,12 @@ export const editProduct: RequestHandler = async (req, res, next) => {
 };
 
 export const editProductPhotos: RequestHandler = async (req, res, next) => {
+  try {
+    await checkAdmin(req, res, next);
+  } catch (err) {
+    return next(err);
+  }
+
   const { id } = req.params;
   let product;
   try {
@@ -210,12 +295,16 @@ export const editProductPhotos: RequestHandler = async (req, res, next) => {
     [fieldname: string]: Express.Multer.File[];
   };
 
+  if (!files["images"]) {
+    return next(new HttpError("Please provide an image", 400));
+  }
+
   const images = files["images"].map((file) => {
     return { photoId: file.filename, path: file.path };
   });
 
   if (!product) {
-    return res.status(201).json({ message: "There is no such product" });
+    return next(new HttpError("There is no such product", 400));
   }
 
   product.images.push(...images);
@@ -230,6 +319,11 @@ export const editProductPhotos: RequestHandler = async (req, res, next) => {
 };
 
 export const deleteProductImages: RequestHandler = async (req, res, next) => {
+  try {
+    await checkAdmin(req, res, next);
+  } catch (err) {
+    return next(err);
+  }
   const { id } = req.params;
   const { photoId } = req.query;
 
@@ -242,14 +336,16 @@ export const deleteProductImages: RequestHandler = async (req, res, next) => {
   }
 
   if (!product) {
-    return res.json({ message: "There is no such product" });
+    return next(new HttpError("There is no such product", 400));
   }
 
   product.images = product.images.filter((photo) => photo.photoId !== photoId);
 
   if (photoId) {
-    v2.uploader.destroy(photoId?.toString(), (err, result) => {
-      console.log(err, result);
+    v2.uploader.destroy(photoId?.toString(), (err) => {
+      if (err) {
+        console.log(err);
+      }
     });
   }
 
@@ -259,15 +355,24 @@ export const deleteProductImages: RequestHandler = async (req, res, next) => {
     return next(new HttpError("Some error happened", 500));
   }
 
-  return res.json({ message: "Delete successfully" });
+  return res.status(201).json({ message: "Delete successfully" });
 };
 
 export const changeProductMainImg: RequestHandler = async (req, res, next) => {
+  try {
+    await checkAdmin(req, res, next);
+  } catch (err) {
+    return next(err);
+  }
   const { id } = req.params;
 
   const files = req.files as {
     [fieldname: string]: Express.Multer.File[];
   };
+
+  if (!files["mainImg"]) {
+    return next(new HttpError("Please provide an image", 400));
+  }
 
   const mainImg = {
     photoId: files["mainImg"][0].filename,
@@ -283,7 +388,7 @@ export const changeProductMainImg: RequestHandler = async (req, res, next) => {
   }
 
   if (!product) {
-    return res.json({ message: "There is no such product" });
+    return next(new HttpError("There is no such product", 400));
   }
 
   product.mainImg = mainImg;
@@ -294,5 +399,5 @@ export const changeProductMainImg: RequestHandler = async (req, res, next) => {
     return next(new HttpError("Server error, please try again", 500));
   }
 
-  res.json({ message: "Edit successfully" });
+  res.status(201).json({ message: "Edit successfully" });
 };

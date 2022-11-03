@@ -25,6 +25,7 @@ const multerOpts: cloudinaryOptions = {
   params: {
     folder: "Yugioh_shop",
     allowedFormats: ["jpeg", "png", "jpg"],
+
     public_id: (_: any, file: any) => {
       let uniqFileName = file.originalname.replace(/\.jpeg|\.jpg|\.png/gi, "");
       uniqFileName += uuidv4();

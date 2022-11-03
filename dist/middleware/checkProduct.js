@@ -7,8 +7,9 @@ const productValidationRules = () => {
         (0, express_validator_1.body)("name").isString().isLength({ min: 1 }),
         (0, express_validator_1.body)("price").toFloat().isFloat({ gt: 0 }),
         (0, express_validator_1.body)("description").isString(),
-        (0, express_validator_1.body)("category").isString().isIn(["cards", "box", "accessory"]),
+        (0, express_validator_1.body)("category").isString().isIn(["card", "cards", "accessory"]),
         (0, express_validator_1.body)("quantity").toFloat().isFloat({ gt: 0 }),
+        (0, express_validator_1.body)("discount").toFloat().isFloat({ min: 0, max: 99 }),
     ];
 };
 exports.productValidationRules = productValidationRules;

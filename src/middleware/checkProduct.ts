@@ -10,8 +10,9 @@ export const productValidationRules = () => {
     body("name").isString().isLength({ min: 1 }),
     body("price").toFloat().isFloat({ gt: 0 }),
     body("description").isString(),
-    body("category").isString().isIn(["cards", "box", "accessory"]),
+    body("category").isString().isIn(["card", "cards", "accessory"]),
     body("quantity").toFloat().isFloat({ gt: 0 }),
+    body("discount").toFloat().isFloat({ min: 0, max: 99 }),
   ];
 };
 

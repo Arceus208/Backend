@@ -1,9 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.changeProductMainImg = exports.deleteProductImages = exports.editProductPhotos = exports.editProduct = exports.getProductById = exports.getProductsByFilter = exports.increaseQuantity = exports.createProduct = exports.getAllProducts = void 0;
+exports.changeProductMainImg = exports.deleteProductImages = exports.editProductPhotos = exports.editProduct = exports.getProductById = exports.getProductsByFilter = exports.createProduct = exports.getAllProducts = void 0;
 const http_error_1 = require("../models/http-error");
 const product_1 = require("../models/product");
 const cloudinary_1 = require("cloudinary");
+const uuid_1 = require("uuid");
+const checkAdmin_1 = require("../middleware/checkAdmin");
+const sortType_1 = require("../utils/sortType");
 const getAllProducts = async (req, res, next) => {
     let products;
     let page;
@@ -27,15 +30,36 @@ const getAllProducts = async (req, res, next) => {
 };
 exports.getAllProducts = getAllProducts;
 const createProduct = async (req, res, next) => {
-    const { name, description, price, category, quantity, subCategory } = req.body;
+    try {
+        await (0, checkAdmin_1.checkAdmin)(req, res, next);
+    }
+    catch (err) {
+        return next(err);
+    }
+    const { name, description, price, category, quantity, subCategory, discount, } = req.body;
     const files = req.files;
-    const mainImg = {
-        photoId: files["mainImg"][0].filename,
-        path: files["mainImg"][0].path,
-    };
-    const images = files["images"].map((file) => {
-        return { photoId: file.filename, path: file.path };
-    });
+    let mainImg;
+    if (!files["mainImg"]) {
+        mainImg = {
+            photoId: (0, uuid_1.v4)(),
+            path: "https://res.cloudinary.com/devnhm0jy/image/upload/v1663753614/Yugioh_shop/no-product-image_ydbimi.png",
+        };
+    }
+    else {
+        mainImg = {
+            photoId: files["mainImg"][0].filename,
+            path: files["mainImg"][0].path,
+        };
+    }
+    let images;
+    if (files["images"]) {
+        images = files["images"].map((file) => {
+            return { photoId: file.filename, path: file.path };
+        });
+    }
+    else {
+        images = [];
+    }
     const product = new product_1.Product({
         name,
         description,
@@ -45,6 +69,7 @@ const createProduct = async (req, res, next) => {
         images,
         quantity: parseFloat(quantity),
         subCategory: JSON.parse(subCategory),
+        discount: parseFloat(discount),
     });
     try {
         await product.save();
@@ -57,72 +82,83 @@ const createProduct = async (req, res, next) => {
     });
 };
 exports.createProduct = createProduct;
-const increaseQuantity = async (req, res, next) => {
-    const pid = req.params.productId;
-    const { value } = req.body;
-    let product;
-    try {
-        product = await product_1.Product.findById({ pid });
-    }
-    catch (err) {
-        return next(new http_error_1.HttpError("Error by getting product", 500));
-    }
-    if (!product) {
-        return next(new http_error_1.HttpError("There is no such product", 422));
-    }
-    product.quantity = product.quantity + value;
-    try {
-        await product.save();
-    }
-    catch (err) {
-        return next(new http_error_1.HttpError("Server error", 500));
-    }
-    res.status(201).json({ message: "Increase quantity successfully!" });
-};
-exports.increaseQuantity = increaseQuantity;
 const getProductsByFilter = async (req, res, next) => {
-    let { search, category, subCategory } = req.query;
-    if (!search) {
-        search = "";
+    let { search, category, subCategory, limit, page, minPrice, maxPrice, isSale, sort, } = req.query;
+    let pageLimit, currentPage;
+    let match = {};
+    if (search && search !== "null") {
+        match = Object.assign(Object.assign({}, match), { $or: [
+                { name: { $regex: search, $options: "i" } },
+                { description: { $regex: search, $options: "i" } },
+            ] });
     }
-    if (!category) {
-        category = "";
+    if (category && category !== "undefined") {
+        match = Object.assign(Object.assign({}, match), { category: category });
     }
-    if (!subCategory) {
-        subCategory = "";
+    if (subCategory && subCategory !== "undefined") {
+        let subQuery;
+        if (typeof subCategory === "string" && subCategory.length !== 0) {
+            subQuery = subCategory.split(" ");
+        }
+        match = Object.assign(Object.assign({}, match), { subCategory: { $in: subQuery } });
     }
-    let subQuery;
-    if (typeof subCategory === "string" && subCategory.length !== 0) {
-        subQuery = subCategory.split(" ");
+    if (minPrice && maxPrice) {
+        match = Object.assign(Object.assign({}, match), { $and: [
+                { curPrice: { $gte: minPrice } },
+                { curPrice: { $lte: maxPrice } },
+            ] });
+    }
+    else {
+        if (minPrice) {
+            match = Object.assign(Object.assign({}, match), { curPrice: { $gte: minPrice } });
+        }
+        if (maxPrice) {
+            match = Object.assign(Object.assign({}, match), { curPrice: { $lte: maxPrice } });
+        }
+    }
+    if (isSale) {
+        if (isSale === "true") {
+            match = Object.assign(Object.assign({}, match), { discount: { $gt: 0 } });
+        }
+    }
+    if (!page) {
+        currentPage = 0;
+    }
+    else {
+        currentPage = parseInt(page);
     }
     let products;
+    if (!limit) {
+        pageLimit = 20;
+    }
+    else {
+        pageLimit = parseInt(limit);
+    }
     try {
-        if ((subCategory === null || subCategory === void 0 ? void 0 : subCategory.length) !== 0) {
-            products = await product_1.Product.find({
-                $or: [
-                    { name: { $regex: search, $options: "i" } },
-                    { description: { $regex: search, $options: "i" } },
-                ],
-                $and: [
-                    { category: { $regex: category, $options: "i" } },
-                    { subCategory: { $all: subQuery } },
-                ],
-            });
+        if (sort) {
+            if (sortType_1.sortType.includes(sort)) {
+                let sortArray = (0, sortType_1.getSortParams)(sort);
+                products = await product_1.Product.find(Object.assign({}, match))
+                    .limit(pageLimit)
+                    .skip(currentPage * pageLimit)
+                    .sort([sortArray]);
+            }
+            else {
+                products = await product_1.Product.find(Object.assign({}, match))
+                    .limit(pageLimit)
+                    .skip(currentPage * pageLimit);
+            }
         }
         else {
-            products = await product_1.Product.find({
-                $or: [
-                    { name: { $regex: search, $options: "i" } },
-                    { description: { $regex: search, $options: "i" } },
-                ],
-                $and: [{ category: { $regex: category, $options: "i" } }],
-            });
+            products = await product_1.Product.find(Object.assign({}, match))
+                .limit(pageLimit)
+                .skip(currentPage * pageLimit);
         }
     }
     catch (err) {
         return next(new http_error_1.HttpError("Server error", 500));
     }
-    return res.json({
+    return res.status(201).json({
         products: products.map((product) => product.toObject({ getters: true })),
     });
 };
@@ -132,6 +168,9 @@ const getProductById = async (req, res, next) => {
     let product;
     try {
         product = await product_1.Product.findById(id);
+        if (!product) {
+            return next(new http_error_1.HttpError("There is no such product", 400));
+        }
     }
     catch (err) {
         return next(new http_error_1.HttpError("Server error", 500));
@@ -142,8 +181,14 @@ const getProductById = async (req, res, next) => {
 };
 exports.getProductById = getProductById;
 const editProduct = async (req, res, next) => {
+    try {
+        await (0, checkAdmin_1.checkAdmin)(req, res, next);
+    }
+    catch (err) {
+        return next(err);
+    }
     const { id } = req.params;
-    const { name, description, price, category, quantity, subCategory } = req.body;
+    const { name, description, price, category, quantity, subCategory, discount, } = req.body;
     let product;
     try {
         product = await product_1.Product.findById(id);
@@ -152,15 +197,16 @@ const editProduct = async (req, res, next) => {
         return next(new http_error_1.HttpError("Server error", 500));
     }
     if (!product) {
-        return res.status(201).json({ message: "There is no such product" });
+        return next(new http_error_1.HttpError("There is no such product", 400));
     }
     try {
         product.name = name;
         product.description = description;
-        product.price = price;
+        product.price = parseFloat(price);
         product.category = category;
-        product.quantity = quantity;
-        product.subCategory = subCategory;
+        product.quantity = parseFloat(quantity);
+        product.subCategory = JSON.parse(subCategory);
+        product.discount = parseFloat(discount);
         await product.save();
     }
     catch (err) {
@@ -172,6 +218,12 @@ const editProduct = async (req, res, next) => {
 };
 exports.editProduct = editProduct;
 const editProductPhotos = async (req, res, next) => {
+    try {
+        await (0, checkAdmin_1.checkAdmin)(req, res, next);
+    }
+    catch (err) {
+        return next(err);
+    }
     const { id } = req.params;
     let product;
     try {
@@ -181,11 +233,14 @@ const editProductPhotos = async (req, res, next) => {
         return next(new http_error_1.HttpError("Server error", 500));
     }
     const files = req.files;
+    if (!files["images"]) {
+        return next(new http_error_1.HttpError("Please provide an image", 400));
+    }
     const images = files["images"].map((file) => {
         return { photoId: file.filename, path: file.path };
     });
     if (!product) {
-        return res.status(201).json({ message: "There is no such product" });
+        return next(new http_error_1.HttpError("There is no such product", 400));
     }
     product.images.push(...images);
     try {
@@ -198,6 +253,12 @@ const editProductPhotos = async (req, res, next) => {
 };
 exports.editProductPhotos = editProductPhotos;
 const deleteProductImages = async (req, res, next) => {
+    try {
+        await (0, checkAdmin_1.checkAdmin)(req, res, next);
+    }
+    catch (err) {
+        return next(err);
+    }
     const { id } = req.params;
     const { photoId } = req.query;
     let product;
@@ -208,12 +269,14 @@ const deleteProductImages = async (req, res, next) => {
         return next(new http_error_1.HttpError("Some error happened", 500));
     }
     if (!product) {
-        return res.json({ message: "There is no such product" });
+        return next(new http_error_1.HttpError("There is no such product", 400));
     }
     product.images = product.images.filter((photo) => photo.photoId !== photoId);
     if (photoId) {
-        cloudinary_1.v2.uploader.destroy(photoId === null || photoId === void 0 ? void 0 : photoId.toString(), (err, result) => {
-            console.log(err, result);
+        cloudinary_1.v2.uploader.destroy(photoId === null || photoId === void 0 ? void 0 : photoId.toString(), (err) => {
+            if (err) {
+                console.log(err);
+            }
         });
     }
     try {
@@ -222,12 +285,21 @@ const deleteProductImages = async (req, res, next) => {
     catch (err) {
         return next(new http_error_1.HttpError("Some error happened", 500));
     }
-    return res.json({ message: "Delete successfully" });
+    return res.status(201).json({ message: "Delete successfully" });
 };
 exports.deleteProductImages = deleteProductImages;
 const changeProductMainImg = async (req, res, next) => {
+    try {
+        await (0, checkAdmin_1.checkAdmin)(req, res, next);
+    }
+    catch (err) {
+        return next(err);
+    }
     const { id } = req.params;
     const files = req.files;
+    if (!files["mainImg"]) {
+        return next(new http_error_1.HttpError("Please provide an image", 400));
+    }
     const mainImg = {
         photoId: files["mainImg"][0].filename,
         path: files["mainImg"][0].path,
@@ -240,7 +312,7 @@ const changeProductMainImg = async (req, res, next) => {
         return next(new http_error_1.HttpError("Server error", 500));
     }
     if (!product) {
-        return res.json({ message: "There is no such product" });
+        return next(new http_error_1.HttpError("There is no such product", 400));
     }
     product.mainImg = mainImg;
     try {
@@ -249,7 +321,7 @@ const changeProductMainImg = async (req, res, next) => {
     catch (err) {
         return next(new http_error_1.HttpError("Server error, please try again", 500));
     }
-    res.json({ message: "Edit successfully" });
+    res.status(201).json({ message: "Edit successfully" });
 };
 exports.changeProductMainImg = changeProductMainImg;
 //# sourceMappingURL=products-controller.js.map

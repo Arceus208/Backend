@@ -9,6 +9,16 @@ export interface IUser {
 
   tokenVersion: number;
   role: Types.ObjectId;
+  address?: IAddress;
+  createAt: Date;
+  orders: Types.ObjectId[];
+}
+
+export interface IAddress {
+  city: string;
+  postnumber: string;
+  street: string;
+  country: string;
 }
 
 const userSchema = new Schema<IUser>({
@@ -18,6 +28,16 @@ const userSchema = new Schema<IUser>({
 
   tokenVersion: { type: Number, required: true },
   role: { type: Schema.Types.ObjectId, required: true, ref: "Role" },
+  address: {
+    type: {
+      city: { type: String, required: true },
+      postnumber: { type: String, required: true },
+      street: { type: String, required: true },
+      country: { type: String, required: true },
+    },
+  },
+  createAt: { type: Date, required: true, default: Date.now },
+  orders: [{ type: Schema.Types.ObjectId, ref: "Order" }],
 });
 
 export const User = model<IUser>("User", userSchema);
